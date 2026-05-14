@@ -4,31 +4,33 @@ import { ConfigEnv, UserConfig, ViteDevServer } from 'vite'
 import {
   contentScripts,
   createDevLoader,
-  createDevMainLoader,
   createProLoader,
-  createProMainLoader,
 } from './contentScripts'
 import { add } from './fileWriter'
-import { formatFileData, getFileName, prefix } from './fileWriter-utilities'
+import {
+  formatFileData,
+  getFileName,
+  prefix,
+} from './fileWriter-utilities'
 import { getOptions } from './plugin-optionsProvider'
-import { basename } from './path'
+import { basename, join } from './path'
 import { RxMap } from './RxMap'
 import { CrxPluginFn } from './types'
 import { contentHmrPortId, preambleId, viteClientId } from './virtualFileIds'
 import colors from 'picocolors'
 
+/** The set of main-world script ids (e.g. "/src/content.ts"). Populated at config time. */
+export const worldMainIds = new Set<string>()
+
 /**
- * Emits content scripts and loaders.
- *
- * #### During build:
- *
- * - This plugin emits content script loaders
- * - `plugin-manifest` emits all entry points (including content scripts)
- *
- * #### During serve:
- *
- * - This plugin emits content scripts and loaders
+ * Returns the static output filename for a main-world script.
+ * This is deterministic and known at config time.
  */
+export function getMainWorldFileName(id: string): string {
+  // e.g. "/src/content.ts" -> "src/content.ts.js"
+  return id.replace(/^\//, '') + '.js'
+}
+
 export const pluginContentScripts: CrxPluginFn = () => {
   const pluginName = 'crx:content-scripts'
 
@@ -38,97 +40,94 @@ export const pluginContentScripts: CrxPluginFn = () => {
   let liveReload = true
   let sub = new Subscription()
 
-  const worldMainIds = new Set<string>()
-
-  const findWorldMainIds = async (config: UserConfig, env: ConfigEnv) => {
-    const { manifest: _manifest } = await getOptions(config)
-
-    const manifest = await (typeof _manifest === 'function'
-      ? _manifest(env)
-      : _manifest)
-
-    ;(manifest.content_scripts || []).forEach(({ world, js }) => {
-      if (world === 'MAIN' && js) {
-        js.forEach((path) => worldMainIds.add(prefix('/', path)))
-      }
-    })
-
-    if (worldMainIds.size) {
-      const name = `[${pluginName}]`
-      const message = colors.yellow(
-        [
-          `${name} Some content-scripts don't support HMR because the world is MAIN:`,
-          ...[...worldMainIds].map((id) => `  ${id}`),
-        ].join('\r\n'),
-      )
-      console.log(message)
-    }
-  }
-
   return [
     {
       name: pluginName,
       apply: 'serve',
       async config(config, env) {
-        await findWorldMainIds(config, env)
+        const { manifest: _manifest } = await getOptions(config)
+        const manifest = await (typeof _manifest === 'function' ? _manifest(env) : _manifest)
+
+        worldMainIds.clear()
+        ;(manifest.content_scripts || []).forEach(({ world, js }) => {
+          if (world === 'MAIN' && js)
+            js.forEach((path) => worldMainIds.add(prefix('/', path)))
+        })
+
         const opts = await getOptions(config)
         const { contentScripts = {} } = opts
         hmrTimeout = contentScripts.hmrTimeout ?? 5000
         preambleCode = preambleCode ?? contentScripts.preambleCode
         liveReload = opts.liveReload !== false
+
+        if (worldMainIds.size) {
+          console.log(colors.yellow(
+            [`[${pluginName}] Content scripts with world MAIN (no HMR):`,
+              ...[...worldMainIds].map((id) => `  ${id}`)].join('\r\n'),
+          ))
+
+          // Register main-world environment: IIFE, static filenames, watched build
+          const input: Record<string, string> = {}
+          for (const id of worldMainIds) {
+            const rel = id.slice(1)
+            input[rel] = rel
+          }
+
+          return {
+            environments: {
+              mainWorld: {
+                build: {
+                  outDir: config.build?.outDir ?? 'dist',
+                  emptyOutDir: false,
+                  lib: {
+                    entry: input,
+                    formats: ['iife'], name: 'mainWorld',
+                    fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
+                  },
+                  
+                  watch: {},
+                },
+              },
+            },
+          }
+        }
       },
       async configureServer(_server) {
         server = _server
-        if (
-          typeof preambleCode === 'undefined' &&
-          server.config.plugins.some(
-            ({ name = 'none' }) =>
-              name.toLowerCase().includes('react') &&
-              !name.toLowerCase().includes('preact'),
-          )
-        ) {
+        if (typeof preambleCode === 'undefined' &&
+          server.config.plugins.some(({ name = 'none' }) =>
+            name.toLowerCase().includes('react') && !name.toLowerCase().includes('preact'))) {
           try {
-            // rollup compiles this correctly for cjs output
             const react = await import('@vitejs/plugin-react')
-            // auto config for react users
             preambleCode = react.default.preambleCode
-          } catch (error) {
-            preambleCode = false
-          }
+          } catch { preambleCode = false }
         }
 
-        // emit content scripts and loaders
         sub.add(
           contentScripts.change$
             .pipe(filter(RxMap.isChangeType.set))
             .subscribe(({ value: script }) => {
               const { type, id } = script
               if (type === 'loader') {
-                let preamble = { fileName: '' } // no preamble by default
-                if (preambleCode)
-                  preamble = add({ type: 'module', id: preambleId })
-                const client = add({ type: 'module', id: viteClientId })
-
-                const file = add({ type: 'module', id })
-                const loader = add({
-                  type: 'asset',
-                  id: getFileName({ type: 'loader', id }),
-                  source: worldMainIds.has(file.id)
-                    ? createDevMainLoader({
-                        fileName: `./${file.fileName.split('/').at(-1)}`,
-                      })
-                    : createDevLoader({
-                        preamble: preamble.fileName,
-                        client: client.fileName,
-                        fileName: file.fileName,
-                      }),
-                })
-                script.fileName = loader.fileName
+                if (worldMainIds.has(prefix('/', id))) {
+                  // Main-world: environment builds it, just record the static filename
+                  script.fileName = getMainWorldFileName(prefix('/', id))
+                } else {
+                  let preamble = { fileName: '' }
+                  if (preambleCode) preamble = add({ type: 'module', id: preambleId })
+                  const client = add({ type: 'module', id: viteClientId })
+                  const file = add({ type: 'module', id })
+                  const loader = add({
+                    type: 'asset',
+                    id: getFileName({ type: 'loader', id }),
+                    source: createDevLoader({ preamble: preamble.fileName, client: client.fileName, fileName: file.fileName }),
+                  })
+                  script.fileName = loader.fileName
+                }
               } else if (type === 'iife') {
                 throw new Error('IIFE content scripts are not implemented')
               } else {
-                const file = add({ type: 'module', id })
-                script.fileName = file.fileName
+                script.fileName = add({ type: 'module', id }).fileName
               }
             }),
         )
@@ -138,94 +137,114 @@ export const pluginContentScripts: CrxPluginFn = () => {
         if (source === contentHmrPortId) return contentHmrPortId
       },
       load(id) {
-        if (id === preambleId && typeof preambleCode === 'string') {
-          const defined = preambleCode.replace(/__BASE__/g, server.config.base)
-          return defined
-        }
-
-        if (id === contentHmrPortId) {
-          const defined = contentHmrPort
+        if (id === preambleId && typeof preambleCode === 'string')
+          return preambleCode.replace(/__BASE__/g, server.config.base)
+        if (id === contentHmrPortId)
+          return contentHmrPort
             .replace('__CRX_HMR_TIMEOUT__', JSON.stringify(hmrTimeout))
             .replace('__CRX_LIVE_RELOAD__', JSON.stringify(liveReload))
-          return defined
-        }
       },
-      closeBundle() {
-        sub.unsubscribe()
-        sub = new Subscription() // can't reuse subscriptions
-      },
+      closeBundle() { sub.unsubscribe(); sub = new Subscription() },
     },
     {
       name: pluginName,
       apply: 'build',
       enforce: 'pre',
       async config(config, env) {
-        await findWorldMainIds(config, env)
+        const { manifest: _manifest } = await getOptions(config)
+        const manifest = await (typeof _manifest === 'function' ? _manifest(env) : _manifest)
+
+        worldMainIds.clear()
+        ;(manifest.content_scripts || []).forEach(({ world, js }) => {
+          if (world === 'MAIN' && js)
+            js.forEach((path) => worldMainIds.add(prefix('/', path)))
+        })
+
+
+        if (worldMainIds.size) {
+          console.log(colors.yellow(
+            [`[${pluginName}] Content scripts with world MAIN (no HMR):`,
+              ...[...worldMainIds].map((id) => `  ${id}`)].join('\r\n'),
+          ))
+
+          const input: Record<string, string> = {}
+          for (const id of worldMainIds) {
+            const rel = id.slice(1)
+            input[rel] = rel
+          }
+
+          return {
+            environments: {
+              mainWorld: {
+                build: {
+                  emptyOutDir: false,
+                  copyPublicDir: false,
+                  lib: {
+                    entry: input,
+                    formats: ['iife'], name: 'mainWorld',
+                    fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
+                  },
+                  
+                },
+              },
+            },
+            builder: {
+              buildApp: async (builder) => {
+                if (builder.environments.mainWorld)
+                  await builder.build(builder.environments.mainWorld)
+                await builder.build(builder.environments.client)
+              },
+            },
+            build: {
+              ...config.build,
+              emptyOutDir: false,
+              rollupOptions: {
+                ...config.build?.rollupOptions,
+                preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
+              },
+            },
+          }
+        }
 
         return {
-          ...config,
           build: {
             ...config.build,
             rollupOptions: {
               ...config.build?.rollupOptions,
-              // keep exports for content script module api
-              preserveEntrySignatures:
-                config.build?.rollupOptions?.preserveEntrySignatures ??
-                'exports-only',
+              preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
             },
           },
         }
       },
       generateBundle(_options, bundle) {
-        // emit content script loaders
         for (const [key, script] of contentScripts)
           if (key === script.refId) {
             if (script.type === 'module') {
-              const fileName = this.getFileName(script.refId)
-              script.fileName = fileName
+              script.fileName = this.getFileName(script.refId)
             } else if (script.type === 'loader') {
-              const fileName = this.getFileName(script.refId)
-              script.fileName = fileName
-
-              const bundleFileInfo = bundle[fileName]
-              // the loader loads scripts asynchronously which in this case needlessly
-              // delays content script execution which may not be desired
-              const shouldUseLoader = !(
-                bundleFileInfo.type === 'chunk' &&
-                bundleFileInfo.imports.length === 0 &&
-                bundleFileInfo.dynamicImports.length === 0 &&
-                bundleFileInfo.exports.length === 0
-              )
-
-              if (shouldUseLoader) {
-                const refId = this.emitFile({
-                  type: 'asset',
-                  name: getFileName({
-                    type: 'loader',
-                    id: basename(script.id),
-                  }),
-                  source: worldMainIds.has(script.id)
-                    ? createProMainLoader({
-                        fileName: `./${fileName.split('/').at(-1)}`,
-                      })
-                    : createProLoader({ fileName }),
-                })
-
-                script.loaderName = this.getFileName(refId)
+              if (worldMainIds.has(script.id)) {
+                // Main-world: built by mainWorld environment, use static filename
+                script.fileName = getMainWorldFileName(script.id)
               } else {
-                // make sure the code is wrapped in a function invocation
-                // to have the same scope isolation as the loader provides
-                //
-                // note that loaders may also call an `onExecute` function
-                // if exported by the content script, but given we
-                // require content scripts in this branch to have no exports
-                // there is obviously no need to handle onExecute() here
-                bundleFileInfo.code = `(function(){${bundleFileInfo.code}})()\n`
+                const fileName = this.getFileName(script.refId)
+                script.fileName = fileName
+                const chunk = bundle[fileName]
+                const shouldUseLoader = chunk.type === 'chunk' &&
+                  (chunk.imports.length > 0 || chunk.dynamicImports.length > 0 || chunk.exports.length > 0)
+                if (shouldUseLoader) {
+                  const refId = this.emitFile({
+                    type: 'asset',
+                    name: getFileName({ type: 'loader', id: basename(script.id) }),
+                    source: createProLoader({ fileName }),
+                  })
+                  script.loaderName = this.getFileName(refId)
+                } else {
+                  chunk.code = `(function(){${chunk.code}})()\n`
+                }
               }
             } else if (script.type === 'iife') {
               throw new Error('IIFE content scripts are not implemented')
             }
-            // trigger update for other key values
             contentScripts.set(script.refId, formatFileData(script))
           }
       },

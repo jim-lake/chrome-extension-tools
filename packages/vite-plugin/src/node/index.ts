@@ -23,7 +23,7 @@ export const crx = (
   } & CrxOptions,
 ): PluginOption[] => {
   contentScripts.clear()
-  return [
+  const plugins = [
     pluginOptionsProvider(options),
     pluginBackground(),
     pluginContentScripts(),
@@ -39,6 +39,20 @@ export const crx = (
     pluginManifest(),
     pluginPrint(),
   ].flat()
+
+  // Exclude all crx plugins from the mainWorld environment —
+  // that environment only needs to bundle its entries as IIFE.
+  for (const p of plugins) {
+    if (p && typeof p === 'object' && 'name' in p) {
+      const orig = (p as any).applyToEnvironment
+      ;(p as any).applyToEnvironment = (env: any) => {
+        if (env.name === 'mainWorld') return false
+        return orig ? orig(env) : true
+      }
+    }
+  }
+
+  return plugins
 }
 
 export const chromeExtension = crx

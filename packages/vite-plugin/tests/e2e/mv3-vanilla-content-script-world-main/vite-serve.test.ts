@@ -1,5 +1,7 @@
 import { expect, test } from 'vitest'
 import { serve } from '../runners'
+import fs from 'fs-extra'
+import path from 'pathe'
 
 test(
   'content script with world MAIN runs in page context',
@@ -34,6 +36,24 @@ test(
     expect(globalVar).toBe('running in MAIN world')
 
     console.log('✓ Content script with world MAIN verified successfully')
+  },
+  {
+    retry: process.env.CI ? 5 : 0,
+  },
+)
+
+test(
+  'dev content script with world MAIN is a synchronous IIFE (no async loader)',
+  async () => {
+    const { outDir } = await serve(__dirname)
+
+    const loaderPath = path.join(outDir, 'src', 'content.ts-loader.js')
+    const code = await fs.readFile(loaderPath, 'utf8')
+
+    // Must be a self-contained IIFE — no imports, no dynamic import, no await
+    expect(code).not.toMatch(/\bimport\s*\(/)
+    expect(code).not.toMatch(/\bimport\s*{/)
+    expect(code).not.toMatch(/\bawait\b/)
   },
   {
     retry: process.env.CI ? 5 : 0,

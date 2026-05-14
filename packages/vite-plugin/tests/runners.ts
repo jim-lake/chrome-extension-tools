@@ -105,6 +105,11 @@ export async function build(
   }
   const output = await _build(inlineConfig)
 
+  // With builder mode (multi-environment), vite.build() returns void
+  if (output === undefined) {
+    return { command: 'build', outDir, output: undefined as any, config: config!, rootDir: dirname }
+  }
+
   if (Array.isArray(output))
     throw new TypeError('received outputarray from vite build')
   if ('close' in output) throw new TypeError('received watcher from vite build')

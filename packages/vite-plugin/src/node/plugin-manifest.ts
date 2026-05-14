@@ -11,6 +11,7 @@ import { decodeManifest, encodeManifest, isString } from './helpers'
 import { ManifestV3 } from './manifest'
 import { basename, isAbsolute, join, relative } from './path'
 import { getOptions } from './plugin-optionsProvider'
+import { worldMainIds, getMainWorldFileName } from './plugin-contentScripts'
 import { CrxPlugin, CrxPluginFn, ManifestFiles } from './types'
 import {
   clearContentCssEntries,
@@ -256,21 +257,35 @@ export const pluginManifest: CrxPluginFn = () => {
           if (manifest.content_scripts)
             for (const { js = [], matches = [] } of manifest.content_scripts)
               for (const file of js) {
-                const id = join(config.root, file)
-                const refId = this.emitFile({
-                  type: 'chunk',
-                  id,
-                  name: basename(file),
-                })
-                contentScripts.set(
-                  file,
-                  formatFileData({
-                    type: 'loader',
-                    id: file,
-                    refId,
-                    matches,
-                  }),
-                )
+                if (worldMainIds.has(prefix('/', file))) {
+                  // Main-world: built by mainWorld environment, use static filename
+                  contentScripts.set(
+                    file,
+                    formatFileData({
+                      type: 'loader',
+                      id: file,
+                      refId: file,
+                      fileName: getMainWorldFileName(prefix('/', file)),
+                      matches,
+                    }),
+                  )
+                } else {
+                  const id = join(config.root, file)
+                  const refId = this.emitFile({
+                    type: 'chunk',
+                    id,
+                    name: basename(file),
+                  })
+                  contentScripts.set(
+                    file,
+                    formatFileData({
+                      type: 'loader',
+                      id: file,
+                      refId,
+                      matches,
+                    }),
+                  )
+                }
               }
 
           if (manifest.background && 'service_worker' in manifest.background) {
@@ -422,9 +437,11 @@ export const pluginManifest: CrxPluginFn = () => {
             .map(async (f) => {
               // copy an asset if it is missing from the bundle
               if (typeof bundle[f] === 'undefined') {
-                // get assets from project root or from public dir
+                // get assets from project root or from public dir or from outDir
+                // (mainWorld environment writes its output to outDir before client builds)
                 let filename = join(config.root, f)
                 if (!existsSync(filename)) filename = join(config.publicDir, f)
+                if (!existsSync(filename)) filename = join(config.build.outDir, f)
                 if (!existsSync(filename)) {
                   // Vite 3 doesn't write source map files until after this plugin is called.
                   // To support Vite 3, check the file extension and assume the source map
