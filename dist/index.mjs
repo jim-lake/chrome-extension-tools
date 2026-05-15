@@ -637,7 +637,8 @@ async function write(fileId) {
 
 const worldMainIds = /* @__PURE__ */ new Set();
 function getMainWorldFileName(id) {
-  return id.replace(/^\//, "") + ".js";
+  const name = id.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+  return `assets/${name}.js`;
 }
 const pluginContentScripts = () => {
   const pluginName = "crx:content-scripts";
@@ -673,7 +674,8 @@ const pluginContentScripts = () => {
           const input = {};
           for (const id of worldMainIds) {
             const rel = id.slice(1);
-            input[rel] = rel;
+            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+            input[name] = rel;
           }
           return {
             environments: {
@@ -684,8 +686,10 @@ const pluginContentScripts = () => {
                   lib: {
                     entry: input,
                     formats: ["iife"],
-                    name: "mainWorld",
-                    fileName: (_format, entryName) => getMainWorldFileName("/" + entryName)
+                    name: "mainWorld"
+                  },
+                  rollupOptions: {
+                    output: { entryFileNames: () => "assets/[name].js" }
                   },
                   watch: {}
                 }
@@ -767,7 +771,8 @@ const pluginContentScripts = () => {
           const input = {};
           for (const id of worldMainIds) {
             const rel = id.slice(1);
-            input[rel] = rel;
+            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+            input[name] = rel;
           }
           return {
             environments: {
@@ -778,8 +783,10 @@ const pluginContentScripts = () => {
                   lib: {
                     entry: input,
                     formats: ["iife"],
-                    name: "mainWorld",
-                    fileName: (_format, entryName) => getMainWorldFileName("/" + entryName)
+                    name: "mainWorld"
+                  },
+                  rollupOptions: {
+                    output: { entryFileNames: () => "assets/[name].js" }
                   }
                 }
               }
