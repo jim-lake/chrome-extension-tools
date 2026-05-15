@@ -6,8 +6,11 @@ import _debug from 'debug'
 import fs from 'fs-extra'
 import jsesc from 'jsesc'
 import path from 'pathe'
+import { fileURLToPath } from 'url'
 import { defineConfig, Plugin, rollup, RollupOptions } from 'rollup'
 import esbuild from 'rollup-plugin-esbuild'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import dts from 'rollup-plugin-dts'
 
 const debug = _debug('config:rollup')
@@ -97,7 +100,7 @@ const plugins = [
   json(),
   resolve(),
   commonjs(),
-  esbuild({ legalComments: 'inline' }),
+  esbuild({ legalComments: 'inline', target: 'es2022' }),
 ]
 const config = defineConfig([
   {
