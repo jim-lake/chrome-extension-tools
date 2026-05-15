@@ -27,8 +27,9 @@ export const worldMainIds = new Set<string>()
  * This is deterministic and known at config time.
  */
 export function getMainWorldFileName(id: string): string {
-  // e.g. "/src/content.ts" -> "src/content.ts.js"
-  return id.replace(/^\//, '') + '.js'
+  // e.g. "/src/content.ts" -> "assets/content.js"
+  const name = id.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
+  return `assets/${name}.js`
 }
 
 export const pluginContentScripts: CrxPluginFn = () => {
@@ -70,7 +71,8 @@ export const pluginContentScripts: CrxPluginFn = () => {
           const input: Record<string, string> = {}
           for (const id of worldMainIds) {
             const rel = id.slice(1)
-            input[rel] = rel
+            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
+            input[name] = rel
           }
 
           return {
@@ -82,9 +84,10 @@ export const pluginContentScripts: CrxPluginFn = () => {
                   lib: {
                     entry: input,
                     formats: ['iife'], name: 'mainWorld',
-                    fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
                   },
-                  
+                  rollupOptions: {
+                    output: { entryFileNames: () => 'assets/[name].js' },
+                  },
                   watch: {},
                 },
               },
@@ -170,7 +173,8 @@ export const pluginContentScripts: CrxPluginFn = () => {
           const input: Record<string, string> = {}
           for (const id of worldMainIds) {
             const rel = id.slice(1)
-            input[rel] = rel
+            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
+            input[name] = rel
           }
 
           return {
@@ -182,9 +186,10 @@ export const pluginContentScripts: CrxPluginFn = () => {
                   lib: {
                     entry: input,
                     formats: ['iife'], name: 'mainWorld',
-                    fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
                   },
-                  
+                  rollupOptions: {
+                    output: { entryFileNames: () => 'assets/[name].js' },
+                  },
                 },
               },
             },
