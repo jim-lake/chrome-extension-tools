@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import debug$5 from 'debug';
 import { join, normalize, dirname, basename, isAbsolute, relative, resolve, parse as parse$1 } from 'pathe';
 import { Subject, filter, ReplaySubject, switchMap, of, startWith, map, BehaviorSubject, mergeMap, firstValueFrom, takeUntil, first, toArray, retry, concatWith, Subscription, buffer } from 'rxjs';
+import { build, createLogger, version } from 'vite';
 import fsx from 'fs-extra';
 import { performance } from 'perf_hooks';
 import { rollup } from 'rollup';
@@ -11,7 +12,6 @@ import { readFile as readFile$1 } from 'fs/promises';
 import MagicString from 'magic-string';
 import convertSourceMap from 'convert-source-map';
 import pc from 'picocolors';
-import { createLogger, version } from 'vite';
 import { readFileSync, promises, existsSync } from 'fs';
 import { createRequire } from 'module';
 import { glob, isDynamicPattern } from 'tinyglobby';
@@ -647,10 +647,18 @@ const pluginContentScripts = () => {
   let hmrTimeout;
   let liveReload = true;
   let sub = new Subscription();
+  const mainWorldEnvConfig = (input, outDir) => ({
+    build: {
+      outDir,
+      emptyOutDir: false,
+      copyPublicDir: false,
+      lib: { entry: input, formats: ["iife"], name: "mainWorld" },
+      rollupOptions: { output: { entryFileNames: () => "assets/[name].js" } }
+    }
+  });
   return [
     {
       name: pluginName,
-      apply: "serve",
       async config(config, env) {
         const { manifest: _manifest } = await getOptions(config);
         const manifest = await (typeof _manifest === "function" ? _manifest(env) : _manifest);
@@ -677,22 +685,38 @@ const pluginContentScripts = () => {
             const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
             input[name] = rel;
           }
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  outDir: config.build?.outDir ?? "dist",
-                  emptyOutDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ["iife"],
-                    name: "mainWorld"
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => "assets/[name].js" }
-                  },
-                  watch: {}
+          const outDir = config.build?.outDir ?? "dist";
+          if (env.command === "build") {
+            return {
+              environments: {
+                mainWorld: mainWorldEnvConfig(input, outDir)
+              },
+              builder: {
+                buildApp: async (builder) => {
+                  if (builder.environments.mainWorld)
+                    await builder.build(builder.environments.mainWorld);
+                  await builder.build(builder.environments.client);
                 }
+              },
+              build: {
+                ...config.build,
+                emptyOutDir: false,
+                rollupOptions: {
+                  ...config.build?.rollupOptions,
+                  preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? "exports-only"
+                }
+              }
+            };
+          }
+          return;
+        }
+        if (env.command === "build") {
+          return {
+            build: {
+              ...config.build,
+              rollupOptions: {
+                ...config.build?.rollupOptions,
+                preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? "exports-only"
               }
             }
           };
@@ -707,6 +731,32 @@ const pluginContentScripts = () => {
           } catch {
             preambleCode = false;
           }
+        }
+        if (worldMainIds.size) {
+          const resolvedConfig = server.config;
+          const input = {};
+          for (const id of worldMainIds) {
+            const rel = id.slice(1);
+            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+            input[name] = rel;
+          }
+          build({
+            configFile: false,
+            root: resolvedConfig.root,
+            resolve: resolvedConfig.resolve,
+            plugins: [],
+            build: {
+              outDir: resolvedConfig.build.outDir,
+              emptyOutDir: false,
+              copyPublicDir: false,
+              sourcemap: resolvedConfig.build.sourcemap,
+              lib: { entry: input, formats: ["iife"], name: "mainWorld" },
+              rollupOptions: { output: { entryFileNames: "assets/[name].js" } },
+              watch: {}
+            }
+          }).catch((err) => {
+            console.error(`[${pluginName}] mainWorld watch build error:`, err);
+          });
         }
         sub.add(
           contentScripts.change$.pipe(filter(RxMap.isChangeType.set)).subscribe(({ value: script }) => {
@@ -753,71 +803,6 @@ const pluginContentScripts = () => {
       name: pluginName,
       apply: "build",
       enforce: "pre",
-      async config(config, env) {
-        const { manifest: _manifest } = await getOptions(config);
-        const manifest = await (typeof _manifest === "function" ? _manifest(env) : _manifest);
-        worldMainIds.clear();
-        (manifest.content_scripts || []).forEach(({ world, js }) => {
-          if (world === "MAIN" && js)
-            js.forEach((path) => worldMainIds.add(prefix$1("/", path)));
-        });
-        if (worldMainIds.size) {
-          console.log(pc.yellow(
-            [
-              `[${pluginName}] Content scripts with world MAIN (no HMR):`,
-              ...[...worldMainIds].map((id) => `  ${id}`)
-            ].join("\r\n")
-          ));
-          const input = {};
-          for (const id of worldMainIds) {
-            const rel = id.slice(1);
-            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
-            input[name] = rel;
-          }
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  emptyOutDir: false,
-                  copyPublicDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ["iife"],
-                    name: "mainWorld"
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => "assets/[name].js" }
-                  }
-                }
-              }
-            },
-            builder: {
-              buildApp: async (builder) => {
-                if (builder.environments.mainWorld)
-                  await builder.build(builder.environments.mainWorld);
-                await builder.build(builder.environments.client);
-              }
-            },
-            build: {
-              ...config.build,
-              emptyOutDir: false,
-              rollupOptions: {
-                ...config.build?.rollupOptions,
-                preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? "exports-only"
-              }
-            }
-          };
-        }
-        return {
-          build: {
-            ...config.build,
-            rollupOptions: {
-              ...config.build?.rollupOptions,
-              preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? "exports-only"
-            }
-          }
-        };
-      },
       generateBundle(_options, bundle) {
         for (const [key, script] of contentScripts)
           if (key === script.refId) {
@@ -867,7 +852,11 @@ const pluginContentScriptsCss = () => {
         if (manifest.content_scripts) {
           for (const script of manifest.content_scripts)
             if (script.js)
-              for (const fileName of script.js)
+              for (const fileName of script.js) {
+                const isMainWorld = [...worldMainIds].some(
+                  (id) => getMainWorldFileName(id) === fileName
+                );
+                if (isMainWorld) continue;
                 if (contentScripts.has(fileName)) {
                   const { css } = contentScripts.get(fileName);
                   if (css?.length) script.css = [script.css ?? [], css].flat();
@@ -876,6 +865,7 @@ const pluginContentScriptsCss = () => {
                     `Content script is undefined by fileName: ${fileName}`
                   );
                 }
+              }
         }
       }
       return manifest;
@@ -1820,16 +1810,29 @@ const pluginManifest = () => {
                 );
               }
               for (const id2 of js) {
-                contentScripts.set(
-                  prefix$1("/", id2),
-                  formatFileData({
-                    type: "loader",
-                    id: id2,
-                    matches,
-                    refId: hashScriptId({ type: "loader", id: id2 }),
-                    fileName: getFileName({ type: "loader", id: id2 })
-                  })
-                );
+                if (worldMainIds.has(prefix$1("/", id2))) {
+                  contentScripts.set(
+                    prefix$1("/", id2),
+                    formatFileData({
+                      type: "loader",
+                      id: id2,
+                      matches,
+                      refId: prefix$1("/", id2),
+                      fileName: getMainWorldFileName(prefix$1("/", id2))
+                    })
+                  );
+                } else {
+                  contentScripts.set(
+                    prefix$1("/", id2),
+                    formatFileData({
+                      type: "loader",
+                      id: id2,
+                      matches,
+                      refId: hashScriptId({ type: "loader", id: id2 }),
+                      fileName: getFileName({ type: "loader", id: id2 })
+                    })
+                  );
+                }
               }
             }
         } else {
@@ -1909,7 +1912,7 @@ const pluginManifest = () => {
               const script = manifest2.content_scripts[i];
               const cssEntry = cssEntryMap.get(i);
               const jsLoaders = (script.js || []).map(
-                (id) => getFileName({ id, type: "loader" })
+                (id) => worldMainIds.has(prefix$1("/", id)) ? getMainWorldFileName(prefix$1("/", id)) : getFileName({ id, type: "loader" })
               );
               if (cssEntry) {
                 const cssLoader = getFileName({
