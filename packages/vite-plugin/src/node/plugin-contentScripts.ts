@@ -1,6 +1,6 @@
 import contentHmrPort from 'client/es/hmr-content-port.ts'
 import { filter, Subscription } from 'rxjs'
-import { ConfigEnv, UserConfig, ViteDevServer } from 'vite'
+import { build, ConfigEnv, UserConfig, ViteDevServer } from 'vite'
 import {
   contentScripts,
   createDevLoader,
@@ -41,10 +41,19 @@ export const pluginContentScripts: CrxPluginFn = () => {
   let liveReload = true
   let sub = new Subscription()
 
+  const mainWorldEnvConfig = (input: Record<string, string>, outDir: string) => ({
+    build: {
+      outDir,
+      emptyOutDir: false,
+      copyPublicDir: false,
+      lib: { entry: input, formats: ['iife' as const], name: 'mainWorld' },
+      rollupOptions: { output: { entryFileNames: () => 'assets/[name].js' } },
+    },
+  })
+
   return [
     {
       name: pluginName,
-      apply: 'serve',
       async config(config, env) {
         const { manifest: _manifest } = await getOptions(config)
         const manifest = await (typeof _manifest === 'function' ? _manifest(env) : _manifest)
@@ -67,7 +76,6 @@ export const pluginContentScripts: CrxPluginFn = () => {
               ...[...worldMainIds].map((id) => `  ${id}`)].join('\r\n'),
           ))
 
-          // Register main-world environment: IIFE, static filenames, watched build
           const input: Record<string, string> = {}
           for (const id of worldMainIds) {
             const rel = id.slice(1)
@@ -75,21 +83,40 @@ export const pluginContentScripts: CrxPluginFn = () => {
             input[name] = rel
           }
 
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  outDir: config.build?.outDir ?? 'dist',
-                  emptyOutDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ['iife'], name: 'mainWorld',
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => 'assets/[name].js' },
-                  },
-                  watch: {},
+          const outDir = config.build?.outDir ?? 'dist'
+
+          if (env.command === 'build') {
+            return {
+              environments: {
+                mainWorld: mainWorldEnvConfig(input, outDir),
+              },
+              builder: {
+                buildApp: async (builder) => {
+                  if (builder.environments.mainWorld)
+                    await builder.build(builder.environments.mainWorld)
+                  await builder.build(builder.environments.client)
                 },
+              },
+              build: {
+                ...config.build,
+                emptyOutDir: false,
+                rollupOptions: {
+                  ...config.build?.rollupOptions,
+                  preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
+                },
+              },
+            }
+          }
+          return
+        }
+
+        if (env.command === 'build') {
+          return {
+            build: {
+              ...config.build,
+              rollupOptions: {
+                ...config.build?.rollupOptions,
+                preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
               },
             },
           }
@@ -104,6 +131,34 @@ export const pluginContentScripts: CrxPluginFn = () => {
             const react = await import('@vitejs/plugin-react')
             preambleCode = react.default.preambleCode
           } catch { preambleCode = false }
+        }
+
+        // Kick off a watched IIFE vite build for main-world scripts in dev mode.
+        if (worldMainIds.size) {
+          const resolvedConfig = server.config
+          const input: Record<string, string> = {}
+          for (const id of worldMainIds) {
+            const rel = id.slice(1)
+            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
+            input[name] = rel
+          }
+          build({
+            configFile: false,
+            root: resolvedConfig.root,
+            resolve: resolvedConfig.resolve,
+            plugins: [],
+            build: {
+              outDir: resolvedConfig.build.outDir,
+              emptyOutDir: false,
+              copyPublicDir: false,
+              sourcemap: resolvedConfig.build.sourcemap,
+              lib: { entry: input, formats: ['iife'], name: 'mainWorld' },
+              rollupOptions: { output: { entryFileNames: 'assets/[name].js' } },
+              watch: {},
+            },
+          }).catch((err) => {
+            console.error(`[${pluginName}] mainWorld watch build error:`, err)
+          })
         }
 
         sub.add(
@@ -153,74 +208,6 @@ export const pluginContentScripts: CrxPluginFn = () => {
       name: pluginName,
       apply: 'build',
       enforce: 'pre',
-      async config(config, env) {
-        const { manifest: _manifest } = await getOptions(config)
-        const manifest = await (typeof _manifest === 'function' ? _manifest(env) : _manifest)
-
-        worldMainIds.clear()
-        ;(manifest.content_scripts || []).forEach(({ world, js }) => {
-          if (world === 'MAIN' && js)
-            js.forEach((path) => worldMainIds.add(prefix('/', path)))
-        })
-
-
-        if (worldMainIds.size) {
-          console.log(colors.yellow(
-            [`[${pluginName}] Content scripts with world MAIN (no HMR):`,
-              ...[...worldMainIds].map((id) => `  ${id}`)].join('\r\n'),
-          ))
-
-          const input: Record<string, string> = {}
-          for (const id of worldMainIds) {
-            const rel = id.slice(1)
-            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
-            input[name] = rel
-          }
-
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  emptyOutDir: false,
-                  copyPublicDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ['iife'], name: 'mainWorld',
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => 'assets/[name].js' },
-                  },
-                },
-              },
-            },
-            builder: {
-              buildApp: async (builder) => {
-                if (builder.environments.mainWorld)
-                  await builder.build(builder.environments.mainWorld)
-                await builder.build(builder.environments.client)
-              },
-            },
-            build: {
-              ...config.build,
-              emptyOutDir: false,
-              rollupOptions: {
-                ...config.build?.rollupOptions,
-                preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
-              },
-            },
-          }
-        }
-
-        return {
-          build: {
-            ...config.build,
-            rollupOptions: {
-              ...config.build?.rollupOptions,
-              preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
-            },
-          },
-        }
-      },
       generateBundle(_options, bundle) {
         for (const [key, script] of contentScripts)
           if (key === script.refId) {

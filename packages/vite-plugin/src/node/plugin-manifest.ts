@@ -240,16 +240,30 @@ export const pluginManifest: CrxPluginFn = () => {
 
               // Register regular JS content scripts
               for (const id of js) {
-                contentScripts.set(
-                  prefix('/', id),
-                  formatFileData({
-                    type: 'loader',
-                    id,
-                    matches,
-                    refId: hashScriptId({ type: 'loader', id }),
-                    fileName: getFileName({ type: 'loader', id }),
-                  }),
-                )
+                if (worldMainIds.has(prefix('/', id))) {
+                  // Main-world: IIFE built separately, use static filename directly
+                  contentScripts.set(
+                    prefix('/', id),
+                    formatFileData({
+                      type: 'loader',
+                      id,
+                      matches,
+                      refId: prefix('/', id),
+                      fileName: getMainWorldFileName(prefix('/', id)),
+                    }),
+                  )
+                } else {
+                  contentScripts.set(
+                    prefix('/', id),
+                    formatFileData({
+                      type: 'loader',
+                      id,
+                      matches,
+                      refId: hashScriptId({ type: 'loader', id }),
+                      fileName: getFileName({ type: 'loader', id }),
+                    }),
+                  )
+                }
               }
             }
         } else {
@@ -344,7 +358,9 @@ export const pluginManifest: CrxPluginFn = () => {
 
               // Transform JS paths to loader file names
               const jsLoaders = (script.js || []).map((id) =>
-                getFileName({ id, type: 'loader' }),
+                worldMainIds.has(prefix('/', id))
+                  ? getMainWorldFileName(prefix('/', id))
+                  : getFileName({ id, type: 'loader' }),
               )
 
               // Prepend synthetic CSS entry loader if CSS exists for this entry

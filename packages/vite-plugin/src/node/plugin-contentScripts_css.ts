@@ -1,5 +1,6 @@
 import { contentScripts } from './contentScripts'
 import { getOptions } from './plugin-optionsProvider'
+import { worldMainIds, getMainWorldFileName } from './plugin-contentScripts'
 import { CrxPluginFn } from './types'
 
 export const pluginContentScriptsCss: CrxPluginFn = () => {
@@ -16,7 +17,12 @@ export const pluginContentScriptsCss: CrxPluginFn = () => {
         if (manifest.content_scripts)
           for (const script of manifest.content_scripts)
             if (script.js)
-              for (const fileName of script.js)
+              for (const fileName of script.js) {
+                // Main-world scripts are IIFE; CSS injection doesn't apply
+                const isMainWorld = [...worldMainIds].some(
+                  (id) => getMainWorldFileName(id) === fileName,
+                )
+                if (isMainWorld) continue
                 if (contentScripts.has(fileName)) {
                   const { css } = contentScripts.get(fileName)!
                   if (css?.length) script.css = [script.css ?? [], css].flat()
@@ -25,6 +31,7 @@ export const pluginContentScriptsCss: CrxPluginFn = () => {
                     `Content script is undefined by fileName: ${fileName}`,
                   )
                 }
+              }
       return manifest
     },
   }
