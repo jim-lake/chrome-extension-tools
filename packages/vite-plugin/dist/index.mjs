@@ -372,6 +372,8 @@ var contentHmrPort = "function isCrxHMRPayload(x) {\n  return x.type === \"custo
 
 var contentDevLoader = "(function () {\n  'use strict';\n\n  const injectTime = performance.now();\n  (async () => {\n    if (__PREAMBLE__)\n      await import(\n        /* @vite-ignore */\n        chrome.runtime.getURL(__PREAMBLE__)\n      );\n    await import(\n      /* @vite-ignore */\n      chrome.runtime.getURL(__CLIENT__)\n    );\n    const { onExecute } = await import(\n      /* @vite-ignore */\n      chrome.runtime.getURL(__SCRIPT__)\n    );\n    onExecute?.({ perf: { injectTime, loadTime: performance.now() - injectTime } });\n  })().catch(console.error);\n\n})();\n";
 
+var contentDevMainAsyncLoader = "(function () {\n  'use strict';\n\n  const injectTime = performance.now();\n  (async () => {\n    const { onExecute } = await import(\n      /* @vite-ignore */\n      __SCRIPT_URL__\n    );\n    onExecute?.({ perf: { injectTime, loadTime: performance.now() - injectTime } });\n  })().catch(console.error);\n\n})();\n";
+
 var contentProLoader = "(function () {\n  'use strict';\n\n  const injectTime = performance.now();\n  (async () => {\n    const { onExecute } = await import(\n      /* @vite-ignore */\n      chrome.runtime.getURL(__SCRIPT__)\n    );\n    onExecute?.({ perf: { injectTime, loadTime: performance.now() - injectTime } });\n  })().catch(console.error);\n\n})();\n";
 
 const contentScripts = new RxMap();
@@ -405,6 +407,11 @@ function createDevLoader({
 }
 function createProLoader({ fileName }) {
   return contentProLoader.replace(/__SCRIPT__/g, JSON.stringify(fileName));
+}
+function createDevMainAsyncLoader({
+  scriptUrl
+}) {
+  return contentDevMainAsyncLoader.replace(/__SCRIPT_URL__/g, JSON.stringify(scriptUrl)).replace(/__TIMESTAMP__/g, JSON.stringify(Date.now()));
 }
 
 const serverEvent$ = new ReplaySubject(1);
@@ -646,6 +653,7 @@ const pluginContentScripts = () => {
   let preambleCode;
   let hmrTimeout;
   let liveReload = true;
+  let mainLoaderAsync = false;
   let sub = new Subscription();
   return [
     {
@@ -664,6 +672,7 @@ const pluginContentScripts = () => {
         hmrTimeout = contentScripts2.hmrTimeout ?? 5e3;
         preambleCode = preambleCode ?? contentScripts2.preambleCode;
         liveReload = opts.liveReload !== false;
+        mainLoaderAsync = opts.mainLoaderAsync ?? false;
         if (worldMainIds.size) {
           console.log(pc.yellow(
             [
@@ -713,7 +722,20 @@ const pluginContentScripts = () => {
             const { type, id } = script;
             if (type === "loader") {
               if (worldMainIds.has(prefix$1("/", id))) {
-                script.fileName = getMainWorldFileName(prefix$1("/", id));
+                if (mainLoaderAsync) {
+                  const proto = server.config.server.https ? "https" : "http";
+                  const port = server.config.server.port ?? 5173;
+                  const scriptUrl = `${proto}://localhost:${port}${prefix$1("/", id)}`;
+                  const loaderFileName = getFileName({ type: "loader", id });
+                  const loader = add({
+                    type: "asset",
+                    id: loaderFileName,
+                    source: createDevMainAsyncLoader({ scriptUrl })
+                  });
+                  script.fileName = loader.fileName;
+                } else {
+                  script.fileName = getMainWorldFileName(prefix$1("/", id));
+                }
               } else {
                 let preamble = { fileName: "" };
                 if (preambleCode) preamble = add({ type: "module", id: preambleId });
@@ -1905,11 +1927,12 @@ const pluginManifest = () => {
           if (manifest2.content_scripts) {
             const cssEntries = getContentCssEntries();
             const cssEntryMap = new Map(cssEntries.map((e) => [e.index, e]));
+            const { mainLoaderAsync = false } = await getOptions(config);
             for (let i = 0; i < manifest2.content_scripts.length; i++) {
               const script = manifest2.content_scripts[i];
               const cssEntry = cssEntryMap.get(i);
               const jsLoaders = (script.js || []).map(
-                (id) => getFileName({ id, type: "loader" })
+                (id) => worldMainIds.has(prefix$1("/", id)) ? mainLoaderAsync ? getFileName({ id, type: "loader" }) : getMainWorldFileName(prefix$1("/", id)) : getFileName({ id, type: "loader" })
               );
               if (cssEntry) {
                 const cssLoader = getFileName({

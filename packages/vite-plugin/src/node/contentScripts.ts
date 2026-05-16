@@ -1,5 +1,6 @@
 import contentDevLoader from 'client/iife/content-dev-loader.ts'
 import contentDevMainLoader from 'client/iife/content-dev-main-loader.ts'
+import contentDevMainAsyncLoader from 'client/iife/content-dev-main-async-loader.ts'
 import contentProLoader from 'client/iife/content-pro-loader.ts'
 import contentProMainLoader from 'client/iife/content-pro-main-loader.ts'
 import { filter } from 'rxjs'
@@ -97,6 +98,16 @@ export function createDevMainLoader({
 }): string {
   return contentDevMainLoader
     .replace(/__SCRIPT__/g, JSON.stringify(fileName))
+    .replace(/__TIMESTAMP__/g, JSON.stringify(Date.now()))
+}
+
+export function createDevMainAsyncLoader({
+  scriptUrl,
+}: {
+  scriptUrl: string
+}): string {
+  return contentDevMainAsyncLoader
+    .replace(/__SCRIPT_URL__/g, JSON.stringify(scriptUrl))
     .replace(/__TIMESTAMP__/g, JSON.stringify(Date.now()))
 }
 

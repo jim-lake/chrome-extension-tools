@@ -92,6 +92,15 @@ export interface CrxOptions {
    */
   browser?: Browser
   /**
+   * When true, main-world content scripts in dev mode are loaded via an async
+   * `import()` from the Vite dev server URL instead of the pre-built IIFE.
+   * This means every page load picks up the latest source without needing to
+   * reload the extension in the browser.
+   *
+   * Default is `false`.
+   */
+  mainLoaderAsync?: boolean
+  /**
    * Enable automatic extension reload and HMR during development. When false:
    *
    * - The extension will not call `chrome.runtime.reload()` on background changes

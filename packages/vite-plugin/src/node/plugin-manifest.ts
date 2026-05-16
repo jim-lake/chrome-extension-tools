@@ -337,14 +337,21 @@ export const pluginManifest: CrxPluginFn = () => {
             // Get all registered CSS entries
             const cssEntries = getContentCssEntries()
             const cssEntryMap = new Map(cssEntries.map((e) => [e.index, e]))
+            const { mainLoaderAsync = false } = await getOptions(config)
 
             for (let i = 0; i < manifest.content_scripts.length; i++) {
               const script = manifest.content_scripts[i]
               const cssEntry = cssEntryMap.get(i)
 
-              // Transform JS paths to loader file names
+              // Transform JS paths to loader file names.
+              // Main-world scripts are built as IIFEs by the mainWorld environment
+              // and referenced directly (no loader wrapper needed — sync injection).
               const jsLoaders = (script.js || []).map((id) =>
-                getFileName({ id, type: 'loader' }),
+                worldMainIds.has(prefix('/', id))
+                  ? mainLoaderAsync
+                    ? getFileName({ id, type: 'loader' })
+                    : getMainWorldFileName(prefix('/', id))
+                  : getFileName({ id, type: 'loader' }),
               )
 
               // Prepend synthetic CSS entry loader if CSS exists for this entry

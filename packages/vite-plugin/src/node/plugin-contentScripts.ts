@@ -4,6 +4,7 @@ import { ConfigEnv, UserConfig, ViteDevServer } from 'vite'
 import {
   contentScripts,
   createDevLoader,
+  createDevMainAsyncLoader,
   createProLoader,
 } from './contentScripts'
 import { add } from './fileWriter'
@@ -39,6 +40,7 @@ export const pluginContentScripts: CrxPluginFn = () => {
   let preambleCode: string | false | undefined
   let hmrTimeout: number | undefined
   let liveReload = true
+  let mainLoaderAsync = false
   let sub = new Subscription()
 
   return [
@@ -60,6 +62,7 @@ export const pluginContentScripts: CrxPluginFn = () => {
         hmrTimeout = contentScripts.hmrTimeout ?? 5000
         preambleCode = preambleCode ?? contentScripts.preambleCode
         liveReload = opts.liveReload !== false
+        mainLoaderAsync = opts.mainLoaderAsync ?? false
 
         if (worldMainIds.size) {
           console.log(colors.yellow(
@@ -113,8 +116,23 @@ export const pluginContentScripts: CrxPluginFn = () => {
               const { type, id } = script
               if (type === 'loader') {
                 if (worldMainIds.has(prefix('/', id))) {
-                  // Main-world: environment builds it, just record the static filename
-                  script.fileName = getMainWorldFileName(prefix('/', id))
+                  if (mainLoaderAsync) {
+                    // Async loader: import() from the Vite dev server URL so every
+                    // page load gets the latest source without an extension reload.
+                    const proto = server.config.server.https ? 'https' : 'http'
+                    const port = server.config.server.port ?? 5173
+                    const scriptUrl = `${proto}://localhost:${port}${prefix('/', id)}`
+                    const loaderFileName = getFileName({ type: 'loader', id })
+                    const loader = add({
+                      type: 'asset',
+                      id: loaderFileName,
+                      source: createDevMainAsyncLoader({ scriptUrl }),
+                    })
+                    script.fileName = loader.fileName
+                  } else {
+                    // Default: point directly at the pre-built IIFE (synchronous)
+                    script.fileName = getMainWorldFileName(prefix('/', id))
+                  }
                 } else {
                   let preamble = { fileName: '' }
                   if (preambleCode) preamble = add({ type: 'module', id: preambleId })
