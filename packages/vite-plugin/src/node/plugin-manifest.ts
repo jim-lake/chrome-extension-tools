@@ -62,7 +62,7 @@ export const pluginManifest: CrxPluginFn = () => {
             contentScripts: js,
             background: sw,
             html,
-          } = await manifestFiles(manifest, { cwd: config.root })
+          } = await manifestFiles(manifest, { cwd: config.root ?? process.cwd() })
           const { entries = [] } = config.optimizeDeps ?? {}
           // Vite ignores build inputs if optimize deps has explicit entries,
           // so we need to merge both to include extra HTML files
