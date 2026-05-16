@@ -1673,7 +1673,7 @@ const pluginManifest = () => {
             contentScripts: js,
             background: sw,
             html
-          } = await manifestFiles(manifest, { cwd: config2.root });
+          } = await manifestFiles(manifest, { cwd: config2.root ?? process.cwd() });
           const { entries = [] } = config2.optimizeDeps ?? {};
           let { input = [] } = config2.build?.rollupOptions ?? {};
           if (typeof input === "string") input = [input];
