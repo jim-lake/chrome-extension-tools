@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import debug$5 from 'debug';
 import { join, normalize, dirname, basename, isAbsolute, relative, resolve, parse as parse$1 } from 'pathe';
 import { Subject, filter, ReplaySubject, switchMap, of, startWith, map, BehaviorSubject, mergeMap, firstValueFrom, takeUntil, first, toArray, retry, concatWith, Subscription, buffer } from 'rxjs';
+import { build, createLogger, version } from 'vite';
 import fsx from 'fs-extra';
 import { performance } from 'perf_hooks';
 import { rollup } from 'rollup';
@@ -11,7 +12,6 @@ import { readFile as readFile$1 } from 'fs/promises';
 import MagicString from 'magic-string';
 import convertSourceMap from 'convert-source-map';
 import pc from 'picocolors';
-import { createLogger, version } from 'vite';
 import { readFileSync, promises, existsSync } from 'fs';
 import { createRequire } from 'module';
 import { glob, isDynamicPattern } from 'tinyglobby';
@@ -717,6 +717,46 @@ const pluginContentScripts = () => {
             preambleCode = false;
           }
         }
+        if (worldMainIds.size) {
+          const input = {};
+          for (const id of worldMainIds) {
+            const rel = id.slice(1);
+            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+            input[name] = rel;
+          }
+          const outDir = server.config.build.outDir;
+          const absOutDir = isAbsolute(outDir) ? outDir : join(server.config.root, outDir);
+          if (mainLoaderAsync) {
+            server.middlewares.use(async (req, res, next) => {
+              if (!req.url) return next();
+              const filePath = join(absOutDir, req.url.split("?")[0]);
+              try {
+                const data = await import('fs').then((fs) => fs.promises.readFile(filePath));
+                res.setHeader("Content-Type", "text/javascript");
+                res.setHeader("Cache-Control", "no-cache");
+                res.end(data);
+              } catch {
+                next();
+              }
+            });
+          }
+          server.httpServer?.on("listening", () => {
+            build({
+              configFile: false,
+              root: server.config.root,
+              mode: server.config.mode,
+              logLevel: "warn",
+              build: {
+                outDir: absOutDir,
+                emptyOutDir: false,
+                copyPublicDir: false,
+                lib: { entry: input, formats: ["iife"], name: "mainWorld" },
+                rollupOptions: { output: { entryFileNames: () => "assets/[name].js" } },
+                watch: {}
+              }
+            }).catch(console.error);
+          });
+        }
         sub.add(
           contentScripts.change$.pipe(filter(RxMap.isChangeType.set)).subscribe(({ value: script }) => {
             const { type, id } = script;
@@ -724,8 +764,10 @@ const pluginContentScripts = () => {
               if (worldMainIds.has(prefix$1("/", id))) {
                 if (mainLoaderAsync) {
                   const proto = server.config.server.https ? "https" : "http";
-                  const port = server.config.server.port ?? 5173;
-                  const scriptUrl = `${proto}://localhost:${port}${prefix$1("/", id)}`;
+                  const addr = server.httpServer?.address();
+                  const port = (addr && typeof addr === "object" ? addr.port : null) ?? server.config.server.port ?? 5173;
+                  const iifePath = getMainWorldFileName(prefix$1("/", id));
+                  const scriptUrl = `${proto}://localhost:${port}/${iifePath}`;
                   const loaderFileName = getFileName({ type: "loader", id });
                   const loader = add({
                     type: "asset",
