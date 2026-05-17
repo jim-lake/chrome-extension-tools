@@ -10,11 +10,10 @@
 TODO
 pnpm-global
 __image_snapshot_diffs__
-
 .DS_Store
 node_modules
 !**/glob-import/dir/node_modules
-dist
+#dist
 dist-ssr
 TODOs.md
 *.log

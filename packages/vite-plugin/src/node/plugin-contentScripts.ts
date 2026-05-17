@@ -1,6 +1,6 @@
 import contentHmrPort from 'client/es/hmr-content-port.ts'
 import { filter, Subscription } from 'rxjs'
-import { ConfigEnv, UserConfig, ViteDevServer } from 'vite'
+import { build, ConfigEnv, UserConfig, ViteDevServer } from 'vite'
 import {
   contentScripts,
   createDevLoader,
@@ -14,7 +14,7 @@ import {
   prefix,
 } from './fileWriter-utilities'
 import { getOptions } from './plugin-optionsProvider'
-import { basename, join } from './path'
+import { basename, isAbsolute, join } from './path'
 import { RxMap } from './RxMap'
 import { CrxPluginFn } from './types'
 import { contentHmrPortId, preambleId, viteClientId } from './virtualFileIds'
@@ -109,6 +109,53 @@ export const pluginContentScripts: CrxPluginFn = () => {
           } catch { preambleCode = false }
         }
 
+        if (worldMainIds.size) {
+          // The mainWorld environment is registered but never built in serve mode.
+          // Call build() directly with the same config, scoped to just mainWorld entries.
+          const input: Record<string, string> = {}
+          for (const id of worldMainIds) {
+            const rel = id.slice(1)
+            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
+            input[name] = rel
+          }
+          const outDir = server.config.build.outDir
+          const absOutDir = isAbsolute(outDir) ? outDir : join(server.config.root, outDir)
+
+          if (mainLoaderAsync) {
+            // Serve the outDir on the dev server so built IIFEs are accessible
+            // (e.g. GET /assets/main-world.js → build/assets/main-world.js)
+            server.middlewares.use(async (req, res, next) => {
+              if (!req.url) return next()
+              const filePath = join(absOutDir, req.url.split('?')[0])
+              try {
+                const data = await import('fs').then(fs => fs.promises.readFile(filePath))
+                res.setHeader('Content-Type', 'text/javascript')
+                res.setHeader('Cache-Control', 'no-cache')
+                res.end(data)
+              } catch {
+                next()
+              }
+            })
+          }
+
+          server.httpServer?.on('listening', () => {
+            build({
+              configFile: false,
+              root: server.config.root,
+              mode: server.config.mode,
+              logLevel: 'warn',
+              build: {
+                outDir: absOutDir,
+                emptyOutDir: false,
+                copyPublicDir: false,
+                lib: { entry: input, formats: ['iife'], name: 'mainWorld' },
+                rollupOptions: { output: { entryFileNames: () => 'assets/[name].js' } },
+                watch: {},
+              },
+            }).catch(console.error)
+          })
+        }
+
         sub.add(
           contentScripts.change$
             .pipe(filter(RxMap.isChangeType.set))
@@ -117,11 +164,14 @@ export const pluginContentScripts: CrxPluginFn = () => {
               if (type === 'loader') {
                 if (worldMainIds.has(prefix('/', id))) {
                   if (mainLoaderAsync) {
-                    // Async loader: import() from the Vite dev server URL so every
-                    // page load gets the latest source without an extension reload.
+                    // Async loader: import() the built IIFE from the dev server.
+                    // The IIFE is served from outDir via sirv middleware — faster than
+                    // importing raw TS which causes recursive dep resolution.
                     const proto = server.config.server.https ? 'https' : 'http'
-                    const port = server.config.server.port ?? 5173
-                    const scriptUrl = `${proto}://localhost:${port}${prefix('/', id)}`
+                    const addr = server.httpServer?.address()
+                    const port = (addr && typeof addr === 'object' ? addr.port : null) ?? server.config.server.port ?? 5173
+                    const iifePath = getMainWorldFileName(prefix('/', id))
+                    const scriptUrl = `${proto}://localhost:${port}/${iifePath}`
                     const loaderFileName = getFileName({ type: 'loader', id })
                     const loader = add({
                       type: 'asset',
