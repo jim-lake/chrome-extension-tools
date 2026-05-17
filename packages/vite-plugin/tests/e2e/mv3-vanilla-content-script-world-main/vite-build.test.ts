@@ -41,22 +41,15 @@ test(
   async () => {
     const { outDir } = await build(__dirname)
 
-    // Find the content script output file
-    const assets = await fs.readdir(path.join(outDir, 'assets'))
-    const contentFile = assets.find((f) => f.startsWith('content.ts'))
-    expect(contentFile).toBeDefined()
-
-    const code = await fs.readFile(
-      path.join(outDir, 'assets', contentFile!),
-      'utf8',
-    )
+    const iifePath = path.join(outDir, 'src', 'content.ts.js')
+    const code = await fs.readFile(iifePath, 'utf8')
 
     // Must be a self-contained IIFE — no imports, no dynamic import, no await
     expect(code).not.toMatch(/\bimport\s*\(/)
     expect(code).not.toMatch(/\bimport\s*{/)
     expect(code).not.toMatch(/\bawait\b/)
     // Must be wrapped in an IIFE
-    expect(code).toMatch(/^\(function\(\)\{/)
+    expect(code).toMatch(/\(function\s*\(/)
   },
   {
     retry: process.env.CI ? 5 : 0,

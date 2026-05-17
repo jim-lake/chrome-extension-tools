@@ -644,8 +644,7 @@ async function write(fileId) {
 
 const worldMainIds = /* @__PURE__ */ new Set();
 function getMainWorldFileName(id) {
-  const name = id.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
-  return `assets/${name}.js`;
+  return id.replace(/^\//, "") + ".js";
 }
 const pluginContentScripts = () => {
   const pluginName = "crx:content-scripts";
@@ -683,8 +682,7 @@ const pluginContentScripts = () => {
           const input = {};
           for (const id of worldMainIds) {
             const rel = id.slice(1);
-            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
-            input[name] = rel;
+            input[rel] = rel;
           }
           return {
             environments: {
@@ -695,10 +693,8 @@ const pluginContentScripts = () => {
                   lib: {
                     entry: input,
                     formats: ["iife"],
-                    name: "mainWorld"
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => "assets/[name].js" }
+                    name: "mainWorld",
+                    fileName: (_format, entryName) => getMainWorldFileName("/" + entryName)
                   },
                   watch: {}
                 }
@@ -721,8 +717,7 @@ const pluginContentScripts = () => {
           const input = {};
           for (const id of worldMainIds) {
             const rel = id.slice(1);
-            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
-            input[name] = rel;
+            input[rel] = rel;
           }
           const outDir = server.config.build.outDir;
           const absOutDir = isAbsolute(outDir) ? outDir : join(server.config.root, outDir);
@@ -750,8 +745,12 @@ const pluginContentScripts = () => {
                 outDir: absOutDir,
                 emptyOutDir: false,
                 copyPublicDir: false,
-                lib: { entry: input, formats: ["iife"], name: "mainWorld" },
-                rollupOptions: { output: { entryFileNames: () => "assets/[name].js" } },
+                lib: {
+                  entry: input,
+                  formats: ["iife"],
+                  name: "mainWorld",
+                  fileName: (_format, entryName) => getMainWorldFileName("/" + entryName)
+                },
                 watch: {}
               }
             }).catch(console.error);
@@ -825,62 +824,46 @@ const pluginContentScripts = () => {
           if (world === "MAIN" && js)
             js.forEach((path) => worldMainIds.add(prefix$1("/", path)));
         });
-        if (worldMainIds.size) {
-          console.log(pc.yellow(
-            [
-              `[${pluginName}] Content scripts with world MAIN (no HMR):`,
-              ...[...worldMainIds].map((id) => `  ${id}`)
-            ].join("\r\n")
-          ));
-          const input = {};
-          for (const id of worldMainIds) {
-            const rel = id.slice(1);
-            const name = rel.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
-            input[name] = rel;
-          }
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  emptyOutDir: false,
-                  copyPublicDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ["iife"],
-                    name: "mainWorld"
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => "assets/[name].js" }
-                  }
-                }
-              }
-            },
-            builder: {
-              buildApp: async (builder) => {
-                if (builder.environments.mainWorld)
-                  await builder.build(builder.environments.mainWorld);
-                await builder.build(builder.environments.client);
-              }
-            },
-            build: {
-              ...config.build,
-              emptyOutDir: false,
-              rollupOptions: {
-                ...config.build?.rollupOptions,
-                preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? "exports-only"
-              }
-            }
-          };
-        }
         return {
           build: {
             ...config.build,
+            emptyOutDir: worldMainIds.size ? false : config.build?.emptyOutDir,
             rollupOptions: {
               ...config.build?.rollupOptions,
               preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? "exports-only"
             }
           }
         };
+      },
+      async buildStart() {
+        if (!worldMainIds.size || "ssr" in this) return;
+        console.log(pc.yellow(
+          [
+            `[${pluginName}] Content scripts with world MAIN (no HMR):`,
+            ...[...worldMainIds].map((id) => `  ${id}`)
+          ].join("\r\n")
+        ));
+        const input = {};
+        for (const id of worldMainIds) {
+          const rel = id.slice(1);
+          input[rel] = rel;
+        }
+        await build({
+          configFile: false,
+          root: this.environment?.config?.root ?? process.cwd(),
+          logLevel: "warn",
+          build: {
+            outDir: this.environment?.config?.build?.outDir ?? "dist",
+            emptyOutDir: false,
+            copyPublicDir: false,
+            lib: {
+              entry: input,
+              formats: ["iife"],
+              name: "mainWorld",
+              fileName: (_format, entryName) => getMainWorldFileName("/" + entryName)
+            }
+          }
+        });
       },
       generateBundle(_options, bundle) {
         for (const [key, script] of contentScripts)

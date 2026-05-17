@@ -28,9 +28,8 @@ export const worldMainIds = new Set<string>()
  * This is deterministic and known at config time.
  */
 export function getMainWorldFileName(id: string): string {
-  // e.g. "/src/content.ts" -> "assets/content.js"
-  const name = id.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
-  return `assets/${name}.js`
+  // e.g. "/src/content.ts" -> "src/content.ts.js"
+  return id.replace(/^\//, '') + '.js'
 }
 
 export const pluginContentScripts: CrxPluginFn = () => {
@@ -74,8 +73,7 @@ export const pluginContentScripts: CrxPluginFn = () => {
           const input: Record<string, string> = {}
           for (const id of worldMainIds) {
             const rel = id.slice(1)
-            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
-            input[name] = rel
+            input[rel] = rel
           }
 
           return {
@@ -87,9 +85,7 @@ export const pluginContentScripts: CrxPluginFn = () => {
                   lib: {
                     entry: input,
                     formats: ['iife'], name: 'mainWorld',
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => 'assets/[name].js' },
+                    fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
                   },
                   watch: {},
                 },
@@ -115,8 +111,7 @@ export const pluginContentScripts: CrxPluginFn = () => {
           const input: Record<string, string> = {}
           for (const id of worldMainIds) {
             const rel = id.slice(1)
-            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
-            input[name] = rel
+            input[rel] = rel
           }
           const outDir = server.config.build.outDir
           const absOutDir = isAbsolute(outDir) ? outDir : join(server.config.root, outDir)
@@ -148,8 +143,11 @@ export const pluginContentScripts: CrxPluginFn = () => {
                 outDir: absOutDir,
                 emptyOutDir: false,
                 copyPublicDir: false,
-                lib: { entry: input, formats: ['iife'], name: 'mainWorld' },
-                rollupOptions: { output: { entryFileNames: () => 'assets/[name].js' } },
+                lib: {
+                  entry: input,
+                  formats: ['iife'], name: 'mainWorld',
+                  fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
+                },
                 watch: {},
               },
             }).catch(console.error)
@@ -231,63 +229,47 @@ export const pluginContentScripts: CrxPluginFn = () => {
             js.forEach((path) => worldMainIds.add(prefix('/', path)))
         })
 
-
-        if (worldMainIds.size) {
-          console.log(colors.yellow(
-            [`[${pluginName}] Content scripts with world MAIN (no HMR):`,
-              ...[...worldMainIds].map((id) => `  ${id}`)].join('\r\n'),
-          ))
-
-          const input: Record<string, string> = {}
-          for (const id of worldMainIds) {
-            const rel = id.slice(1)
-            const name = rel.replace(/^.*\//, '').replace(/\.[^.]+$/, '')
-            input[name] = rel
-          }
-
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  emptyOutDir: false,
-                  copyPublicDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ['iife'], name: 'mainWorld',
-                  },
-                  rollupOptions: {
-                    output: { entryFileNames: () => 'assets/[name].js' },
-                  },
-                },
-              },
-            },
-            builder: {
-              buildApp: async (builder) => {
-                if (builder.environments.mainWorld)
-                  await builder.build(builder.environments.mainWorld)
-                await builder.build(builder.environments.client)
-              },
-            },
-            build: {
-              ...config.build,
-              emptyOutDir: false,
-              rollupOptions: {
-                ...config.build?.rollupOptions,
-                preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
-              },
-            },
-          }
-        }
-
         return {
           build: {
             ...config.build,
+            emptyOutDir: worldMainIds.size ? false : config.build?.emptyOutDir,
             rollupOptions: {
               ...config.build?.rollupOptions,
               preserveEntrySignatures: config.build?.rollupOptions?.preserveEntrySignatures ?? 'exports-only',
             },
           },
         }
+      },
+      async buildStart() {
+        if (!worldMainIds.size || ('ssr' in this)) return
+
+        console.log(colors.yellow(
+          [`[${pluginName}] Content scripts with world MAIN (no HMR):`,
+            ...[...worldMainIds].map((id) => `  ${id}`)].join('\r\n'),
+        ))
+
+        // Build IIFE files for main-world scripts before the main bundle runs,
+        // so they're on disk when generateBundle/renderCrxManifest needs them.
+        const input: Record<string, string> = {}
+        for (const id of worldMainIds) {
+          const rel = id.slice(1)
+          input[rel] = rel
+        }
+        await build({
+          configFile: false,
+          root: this.environment?.config?.root ?? process.cwd(),
+          logLevel: 'warn',
+          build: {
+            outDir: this.environment?.config?.build?.outDir ?? 'dist',
+            emptyOutDir: false,
+            copyPublicDir: false,
+            lib: {
+              entry: input,
+              formats: ['iife'], name: 'mainWorld',
+              fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
+            },
+          },
+        })
       },
       generateBundle(_options, bundle) {
         for (const [key, script] of contentScripts)

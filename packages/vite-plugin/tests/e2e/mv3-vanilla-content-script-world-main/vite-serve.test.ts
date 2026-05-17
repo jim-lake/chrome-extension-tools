@@ -47,8 +47,8 @@ test(
   async () => {
     const { outDir } = await serve(__dirname)
 
-    const loaderPath = path.join(outDir, 'src', 'content.ts-loader.js')
-    const code = await fs.readFile(loaderPath, 'utf8')
+    const iifePath = path.join(outDir, 'src', 'content.ts.js')
+    const code = await fs.readFile(iifePath, 'utf8')
 
     // Must be a self-contained IIFE — no imports, no dynamic import, no await
     expect(code).not.toMatch(/\bimport\s*\(/)
