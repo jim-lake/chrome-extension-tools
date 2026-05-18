@@ -92,12 +92,12 @@ export interface CrxOptions {
    */
   browser?: Browser
   /**
-   * When true, main-world content scripts in dev mode are loaded via an async
-   * `import()` from the Vite dev server URL instead of the pre-built IIFE.
+   * When true, main-world content scripts in dev mode use a dynamic
+   * `import()` via the service worker proxy instead of the pre-built IIFE.
    * This means every page load picks up the latest source without needing to
    * reload the extension in the browser.
    *
-   * Default is `false`.
+   * Default is `false` (uses a static IIFE that only updates on extension reload).
    */
   mainLoaderAsync?: boolean
   /**

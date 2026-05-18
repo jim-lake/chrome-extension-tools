@@ -344,8 +344,9 @@ export const pluginManifest: CrxPluginFn = () => {
               const cssEntry = cssEntryMap.get(i)
 
               // Transform JS paths to loader file names.
-              // Main-world scripts are built as IIFEs by the mainWorld environment
-              // and referenced directly (no loader wrapper needed — sync injection).
+              // When mainLoaderAsync, main-world scripts use a loader that import()s
+              // the module (proxied by the service worker to get latest code).
+              // Otherwise, they point directly at the pre-built IIFE.
               const jsLoaders = (script.js || []).map((id) =>
                 worldMainIds.has(prefix('/', id))
                   ? mainLoaderAsync

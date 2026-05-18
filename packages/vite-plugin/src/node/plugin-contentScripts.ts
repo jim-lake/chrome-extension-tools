@@ -4,7 +4,7 @@ import { build, ConfigEnv, UserConfig, ViteDevServer } from 'vite'
 import {
   contentScripts,
   createDevLoader,
-  createDevMainAsyncLoader,
+  createDevMainLoader,
   createProLoader,
 } from './contentScripts'
 import { add } from './fileWriter'
@@ -69,28 +69,30 @@ export const pluginContentScripts: CrxPluginFn = () => {
               ...[...worldMainIds].map((id) => `  ${id}`)].join('\r\n'),
           ))
 
-          // Register main-world environment: IIFE, static filenames, watched build
-          const input: Record<string, string> = {}
-          for (const id of worldMainIds) {
-            const rel = id.slice(1)
-            input[rel] = rel
-          }
+          if (!mainLoaderAsync) {
+            // Register main-world environment (not used in serve, but declared for config)
+            const input: Record<string, string> = {}
+            for (const id of worldMainIds) {
+              const rel = id.slice(1)
+              input[rel] = rel
+            }
 
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  outDir: config.build?.outDir ?? 'dist',
-                  emptyOutDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ['iife'], name: 'mainWorld',
-                    fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
+            return {
+              environments: {
+                mainWorld: {
+                  build: {
+                    outDir: config.build?.outDir ?? 'dist',
+                    emptyOutDir: false,
+                    lib: {
+                      entry: input,
+                      formats: ['iife'], name: 'mainWorld',
+                      fileName: (_format, entryName) => getMainWorldFileName('/' + entryName),
+                    },
+                    watch: {},
                   },
-                  watch: {},
                 },
               },
-            },
+            }
           }
         }
       },
@@ -106,8 +108,7 @@ export const pluginContentScripts: CrxPluginFn = () => {
         }
 
         if (worldMainIds.size) {
-          // The mainWorld environment is registered but never built in serve mode.
-          // Call build() directly with the same config, scoped to just mainWorld entries.
+          // Build IIFEs for main-world scripts (watched for rebuilds on change).
           const input: Record<string, string> = {}
           for (const id of worldMainIds) {
             const rel = id.slice(1)
@@ -117,19 +118,19 @@ export const pluginContentScripts: CrxPluginFn = () => {
           const absOutDir = isAbsolute(outDir) ? outDir : join(server.config.root, outDir)
 
           if (mainLoaderAsync) {
-            // Serve the outDir on the dev server so built IIFEs are accessible
-            // (e.g. GET /assets/main-world.js → build/assets/main-world.js)
-            server.middlewares.use(async (req, res, next) => {
-              if (!req.url) return next()
+            // Serve built IIFEs on the dev server so the service worker proxy
+            // can fetch them. Only matches known IIFE filenames.
+            const iifeFileNames = new Set(
+              [...worldMainIds].map((id) => '/' + getMainWorldFileName(id))
+            )
+            server.middlewares.use((req, res, next) => {
+              if (!req.url || !iifeFileNames.has(req.url.split('?')[0])) return next()
               const filePath = join(absOutDir, req.url.split('?')[0])
-              try {
-                const data = await import('fs').then(fs => fs.promises.readFile(filePath))
+              import('fs').then(fs => fs.promises.readFile(filePath)).then(data => {
                 res.setHeader('Content-Type', 'text/javascript')
                 res.setHeader('Cache-Control', 'no-cache')
                 res.end(data)
-              } catch {
-                next()
-              }
+              }).catch(() => next())
             })
           }
 
@@ -162,19 +163,16 @@ export const pluginContentScripts: CrxPluginFn = () => {
               if (type === 'loader') {
                 if (worldMainIds.has(prefix('/', id))) {
                   if (mainLoaderAsync) {
-                    // Async loader: import() the built IIFE from the dev server.
-                    // The IIFE is served from outDir via sirv middleware — faster than
-                    // importing raw TS which causes recursive dep resolution.
-                    const proto = server.config.server.https ? 'https' : 'http'
-                    const addr = server.httpServer?.address()
-                    const port = (addr && typeof addr === 'object' ? addr.port : null) ?? server.config.server.port ?? 5173
-                    const iifePath = getMainWorldFileName(prefix('/', id))
-                    const scriptUrl = `${proto}://localhost:${port}/${iifePath}`
-                    const loaderFileName = getFileName({ type: 'loader', id })
+                    // Loader import()s the IIFE via relative path. The service worker
+                    // proxies to the dev server which serves the latest watched build.
+                    // Single request for the whole bundle — wins the race.
+                    const iifeFileName = getMainWorldFileName(prefix('/', id))
                     const loader = add({
                       type: 'asset',
-                      id: loaderFileName,
-                      source: createDevMainAsyncLoader({ scriptUrl }),
+                      id: getFileName({ type: 'loader', id }),
+                      source: createDevMainLoader({
+                        fileName: `./${iifeFileName.split('/').at(-1)}`,
+                      }),
                     })
                     script.fileName = loader.fileName
                   } else {

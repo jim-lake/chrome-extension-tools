@@ -372,7 +372,7 @@ var contentHmrPort = "function isCrxHMRPayload(x) {\n  return x.type === \"custo
 
 var contentDevLoader = "(function () {\n  'use strict';\n\n  const injectTime = performance.now();\n  (async () => {\n    if (__PREAMBLE__)\n      await import(\n        /* @vite-ignore */\n        chrome.runtime.getURL(__PREAMBLE__)\n      );\n    await import(\n      /* @vite-ignore */\n      chrome.runtime.getURL(__CLIENT__)\n    );\n    const { onExecute } = await import(\n      /* @vite-ignore */\n      chrome.runtime.getURL(__SCRIPT__)\n    );\n    onExecute?.({ perf: { injectTime, loadTime: performance.now() - injectTime } });\n  })().catch(console.error);\n\n})();\n";
 
-var contentDevMainAsyncLoader = "(function () {\n  'use strict';\n\n  const injectTime = performance.now();\n  (async () => {\n    const { onExecute } = await import(\n      /* @vite-ignore */\n      __SCRIPT_URL__\n    );\n    onExecute?.({ perf: { injectTime, loadTime: performance.now() - injectTime } });\n  })().catch(console.error);\n\n})();\n";
+var contentDevMainLoader = "(function () {\n  'use strict';\n\n  const injectTime = performance.now();\n  (async () => {\n    console.warn(__SCRIPT__, \"Content-script doesn't support HMR because the world is MAIN\");\n    const { onExecute } = await import(\n      /* @vite-ignore */\n      __SCRIPT__\n    );\n    onExecute?.({ perf: { injectTime, loadTime: performance.now() - injectTime } });\n  })().catch(console.error);\n\n})();\n";
 
 var contentProLoader = "(function () {\n  'use strict';\n\n  const injectTime = performance.now();\n  (async () => {\n    const { onExecute } = await import(\n      /* @vite-ignore */\n      chrome.runtime.getURL(__SCRIPT__)\n    );\n    onExecute?.({ perf: { injectTime, loadTime: performance.now() - injectTime } });\n  })().catch(console.error);\n\n})();\n";
 
@@ -408,10 +408,10 @@ function createDevLoader({
 function createProLoader({ fileName }) {
   return contentProLoader.replace(/__SCRIPT__/g, JSON.stringify(fileName));
 }
-function createDevMainAsyncLoader({
-  scriptUrl
+function createDevMainLoader({
+  fileName
 }) {
-  return contentDevMainAsyncLoader.replace(/__SCRIPT_URL__/g, JSON.stringify(scriptUrl)).replace(/__TIMESTAMP__/g, JSON.stringify(Date.now()));
+  return contentDevMainLoader.replace(/__SCRIPT__/g, JSON.stringify(fileName)).replace(/__TIMESTAMP__/g, JSON.stringify(Date.now()));
 }
 
 const serverEvent$ = new ReplaySubject(1);
@@ -679,28 +679,30 @@ const pluginContentScripts = () => {
               ...[...worldMainIds].map((id) => `  ${id}`)
             ].join("\r\n")
           ));
-          const input = {};
-          for (const id of worldMainIds) {
-            const rel = id.slice(1);
-            input[rel] = rel;
-          }
-          return {
-            environments: {
-              mainWorld: {
-                build: {
-                  outDir: config.build?.outDir ?? "dist",
-                  emptyOutDir: false,
-                  lib: {
-                    entry: input,
-                    formats: ["iife"],
-                    name: "mainWorld",
-                    fileName: (_format, entryName) => getMainWorldFileName("/" + entryName)
-                  },
-                  watch: {}
+          if (!mainLoaderAsync) {
+            const input = {};
+            for (const id of worldMainIds) {
+              const rel = id.slice(1);
+              input[rel] = rel;
+            }
+            return {
+              environments: {
+                mainWorld: {
+                  build: {
+                    outDir: config.build?.outDir ?? "dist",
+                    emptyOutDir: false,
+                    lib: {
+                      entry: input,
+                      formats: ["iife"],
+                      name: "mainWorld",
+                      fileName: (_format, entryName) => getMainWorldFileName("/" + entryName)
+                    },
+                    watch: {}
+                  }
                 }
               }
-            }
-          };
+            };
+          }
         }
       },
       async configureServer(_server) {
@@ -722,17 +724,17 @@ const pluginContentScripts = () => {
           const outDir = server.config.build.outDir;
           const absOutDir = isAbsolute(outDir) ? outDir : join(server.config.root, outDir);
           if (mainLoaderAsync) {
-            server.middlewares.use(async (req, res, next) => {
-              if (!req.url) return next();
+            const iifeFileNames = new Set(
+              [...worldMainIds].map((id) => "/" + getMainWorldFileName(id))
+            );
+            server.middlewares.use((req, res, next) => {
+              if (!req.url || !iifeFileNames.has(req.url.split("?")[0])) return next();
               const filePath = join(absOutDir, req.url.split("?")[0]);
-              try {
-                const data = await import('fs').then((fs) => fs.promises.readFile(filePath));
+              import('fs').then((fs) => fs.promises.readFile(filePath)).then((data) => {
                 res.setHeader("Content-Type", "text/javascript");
                 res.setHeader("Cache-Control", "no-cache");
                 res.end(data);
-              } catch {
-                next();
-              }
+              }).catch(() => next());
             });
           }
           server.httpServer?.on("listening", () => {
@@ -762,16 +764,13 @@ const pluginContentScripts = () => {
             if (type === "loader") {
               if (worldMainIds.has(prefix$1("/", id))) {
                 if (mainLoaderAsync) {
-                  const proto = server.config.server.https ? "https" : "http";
-                  const addr = server.httpServer?.address();
-                  const port = (addr && typeof addr === "object" ? addr.port : null) ?? server.config.server.port ?? 5173;
-                  const iifePath = getMainWorldFileName(prefix$1("/", id));
-                  const scriptUrl = `${proto}://localhost:${port}/${iifePath}`;
-                  const loaderFileName = getFileName({ type: "loader", id });
+                  const iifeFileName = getMainWorldFileName(prefix$1("/", id));
                   const loader = add({
                     type: "asset",
-                    id: loaderFileName,
-                    source: createDevMainAsyncLoader({ scriptUrl })
+                    id: getFileName({ type: "loader", id }),
+                    source: createDevMainLoader({
+                      fileName: `./${iifeFileName.split("/").at(-1)}`
+                    })
                   });
                   script.fileName = loader.fileName;
                 } else {

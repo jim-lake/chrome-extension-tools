@@ -1,3 +1,4 @@
+.kiro/
 # Artifacts
 **/tests/**/.vite
 **/tests/**/.vite-build
